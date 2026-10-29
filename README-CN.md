@@ -12,13 +12,13 @@ filemill 的目标是提供一个可在 Windows / macOS / Linux 上直接使用�
 
 ## 当前状态
 
-项目处于早期开发阶段。**里程碑 M1** 已完成：Cobra CLI 骨架、全局 flag、带过滤的递归 walker，以及 `list` 子命令。
+项目处于早期开发阶段。**里程碑 M1～M3** 已完成：walker + 过滤、并发 `hash`、以及安全的 `rename`。
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
 | M1 | CLI 骨架 + 全局 flag + walker + `list` | 已完成 |
-| M2 | 并发池 + 原子写入 + `hash` | 计划中 |
-| M3 | `rename` + dry-run / apply + 报告 | 计划中 |
+| M2 | 并发池 + 原子写入 + `hash` | 已完成 |
+| M3 | `rename` + dry-run / apply + 报告 | 已完成 |
 | M4 | `dedupe` + `clean` | 计划中 |
 | M5 | 配置文件、排除规则、输出格式 | 计划中 |
 | M6 | 单测、文档、跨平台发布（v0.1.0） | 计划中 |
@@ -29,22 +29,22 @@ filemill 的目标是提供一个可在 Windows / macOS / Linux 上直接使用�
 
 - 递归目录遍历（`filepath.WalkDir`）
 - 过滤：扩展名、文件名 glob、正则、大小、修改时间
+- 带限流的并发 worker 池（`--workers`，默认 `min(NumCPU, 8)`）
+- 原子写入（临时文件 + rename）与单文件错误隔离
+- 进度汇总：总数 / 成功 / 失败 / 耗时
 - 全局 flag：`--workers`、`--dry-run`、`--log-file`
 - `list` — 打印匹配文件（路径、大小、修改时间）
-
-### 计划中（MVP / P0）
-
-- 带缓冲 channel 的并发 worker 池（`--workers`，默认 `min(NumCPU, 8)`）
-- 原子写入（先写临时文件，再 `os.Rename`）
-- 单文件错误隔离（记录日志并继续）
-- 进度汇总：总数 / 成功 / 失败 / 耗时
-- `hash` — 批量 MD5 / SHA-1 / SHA-256（CSV / JSON）
+- `hash` — 批量 MD5 / SHA-1 / SHA-256（`table` / `csv` / `json`）
 - `rename` — 前缀、后缀、序号、正则替换（默认 dry-run）
+
+### 计划中（剩余 MVP / P0）
+
 - `dedupe` — 按大小 + 哈希查重（可选 `--delete`）
+- 按规则 `clean`（强制 dry-run 确认）
 
 ### 后续（P1 / P2）
 
-- `compress` / `extract`、按规则 `clean`
+- `compress` / `extract`
 - `.filemill.yaml` 配置、`--exclude`、统一 `--output`
 - 断点续跑、编码转换、目录监听、插件、TUI
 
@@ -69,17 +69,21 @@ go build -o filemill.exe .
 ## 快速开始
 
 ```bash
-# 列出 ./testdata 下所有文件
+# 列出文件
 filemill list ./testdata
-
-# 按扩展名过滤
 filemill list ./testdata --ext .txt
-
-# 按文件名 glob 过滤
 filemill list ./testdata --name "*.log"
 
-# 按正则 + 大小过滤
-filemill list ./testdata --regex "^app" --min-size 1
+# 计算哈希
+filemill hash ./testdata --ext .txt --output json
+filemill hash ./testdata --algo md5 --output csv --workers 4
+filemill hash ./testdata --output json --out hashes.json
+
+# 重命名（默认 dry-run；加 --apply / --yes 才执行）
+filemill rename ./testdata --prefix new_
+filemill rename ./testdata --prefix new_ --ext .txt --apply
+filemill rename ./testdata --find "^old_" --repl "new_" --yes
+filemill rename ./testdata --suffix _bak --seq --seq-start 1 --seq-width 3
 ```
 
 ### 全局 flag
@@ -90,30 +94,56 @@ filemill list ./testdata --regex "^app" --min-size 1
 | `--dry-run` | 试运行：只预览，不改动文件 |
 | `--log-file path` | 同时将结构化日志写入文件 |
 
-### `list` flag
+### 共用过滤 flag（`list` / `hash` / `rename`）
 
 | Flag | 说明 |
 |---|---|
 | `--ext` | 扩展名过滤（可重复 / 逗号分隔） |
 | `--name` | 文件名 glob（`filepath.Match`） |
-| `--regex` | 文件名正则 |
+| `--regex` | 文件名正则（筛选要处理的文件） |
 | `--min-size` / `--max-size` | 大小上下限（字节） |
 | `--after` / `--before` | 修改时间过滤（`2006-01-02` 或 RFC3339） |
 
+### `hash` flag
+
+| Flag | 说明 |
+|---|---|
+| `--algo` | `md5` / `sha1` / `sha256`（默认 `sha256`） |
+| `--output` | `table` / `csv` / `json`（默认 `table`） |
+| `--out` | 将结果原子写入文件（默认打印到标准输出） |
+
+### `rename` flag
+
+| Flag | 说明 |
+|---|---|
+| `--prefix` | 添加到文件名前的前缀 |
+| `--suffix` | 插入到扩展名之前的后缀 |
+| `--find` / `--repl` | 对文件名做正则替换（支持 `$1` 分组） |
+| `--seq` | 在扩展名之前追加序号 |
+| `--seq-start` / `--seq-width` | 序号起始值（默认 1）与零填充宽度（默认 3） |
+| `--apply` / `--yes` | 真正执行重命名（默认为 dry-run） |
+
+规则叠加顺序：正则 → 前缀 → 后缀 → 序号。全局 `--dry-run` 会覆盖 `--apply` / `--yes`。
+
 ## 安全约定
 
-破坏性操作（`rename`、删除、`clean` 等）将**默认 dry-run**。真正改动文件需要显式确认，例如 `--apply` 或 `--yes`（随对应子命令落地）。
+破坏性操作（`rename`，以及后续的删除 / `clean`）**默认 dry-run**。真正改动需要 `--apply` 或 `--yes`。重命名不会覆盖已存在目标；冲突会明确报错，其余文件继续处理。
 
 ## 项目结构
 
 ```text
 filemill/
 ├── main.go
-├── cmd/                 # Cobra 命令（root、list、…）
+├── cmd/                   # Cobra 命令：list、hash、rename
 ├── internal/
-│   └── walker/          # 递归遍历 + 过滤
-├── testdata/            # 本地验证样例文件
-├── DevRequirements.md   # 产品 / 工程需求
+│   ├── walker/            # 递归遍历 + 过滤
+│   ├── worker/            # 并发池
+│   ├── fsutil/            # 原子写入、安全重命名
+│   ├── hashutil/          # 文件哈希
+│   ├── renameutil/        # 重命名规则与计划
+│   └── report/            # 进度汇总
+├── testdata/
+├── DevRequirements.md
 ├── README.md
 └── README-CN.md
 ```
