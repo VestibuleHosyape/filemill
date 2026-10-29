@@ -138,13 +138,5 @@ func applyOneRename(m renameutil.Mapping) error {
 	if _, err := os.Stat(m.OldPath); err != nil {
 		return fmt.Errorf("源文件不可用: %w", err)
 	}
-	// Refuse clobbering a path that already exists and is not the source.
-	if absOld, err1 := filepath.Abs(m.OldPath); err1 == nil {
-		if absNew, err2 := filepath.Abs(m.NewPath); err2 == nil && absOld != absNew {
-			if _, err := os.Stat(m.NewPath); err == nil {
-				return fmt.Errorf("目标已存在: %s", m.NewPath)
-			}
-		}
-	}
 	return fsutil.RenameNoOverwrite(m.OldPath, m.NewPath)
 }
