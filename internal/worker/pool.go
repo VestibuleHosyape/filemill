@@ -1,15 +1,23 @@
 package worker
 
 import (
+	"errors"
 	"log/slog"
 	"sync"
 )
+
+// ErrClosed is returned when Submit is called after Close.
+var ErrClosed = errors.New("worker pool closed")
 
 // Pool is a bounded worker pool backed by a buffered job channel.
 type Pool struct {
 	workers int
 	jobs    chan func()
 	wg      sync.WaitGroup
+
+	mu       sync.Mutex
+	closed   bool
+	inflight sync.WaitGroup // tracks Submit calls that passed the closed check
 }
 
 // New creates a pool with the given worker count.
@@ -38,14 +46,26 @@ func (p *Pool) Start() {
 }
 
 // Submit enqueues a job. It blocks if the buffer is full (back-pressure).
-func (p *Pool) Submit(job func()) {
+// After Close, Submit returns ErrClosed instead of sending on a closed channel.
+func (p *Pool) Submit(job func()) error {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return ErrClosed
+	}
+	p.inflight.Add(1)
+	p.mu.Unlock()
+
+	defer p.inflight.Done()
 	p.jobs <- job
+	return nil
 }
 
 // SubmitErr runs fn in a worker. On error it logs and calls onErr when non-nil,
 // then continues — single-job failures never stop the pool (error isolation).
-func (p *Pool) SubmitErr(fn func() error, onErr func(error)) {
-	p.Submit(func() {
+// Returns ErrClosed if the pool has already been closed.
+func (p *Pool) SubmitErr(fn func() error, onErr func(error)) error {
+	return p.Submit(func() {
 		if err := fn(); err != nil {
 			slog.Error("job failed", "err", err)
 			if onErr != nil {
@@ -55,8 +75,20 @@ func (p *Pool) SubmitErr(fn func() error, onErr func(error)) {
 	})
 }
 
-// Close closes the job channel and waits for all workers to finish.
+// Close rejects new Submit calls, waits for in-flight Submit sends to finish,
+// closes the job channel, then waits for workers to drain.
+// Close is safe to call multiple times.
 func (p *Pool) Close() {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		p.wg.Wait()
+		return
+	}
+	p.closed = true
+	p.mu.Unlock()
+
+	p.inflight.Wait()
 	close(p.jobs)
 	p.wg.Wait()
 }

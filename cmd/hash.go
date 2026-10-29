@@ -96,7 +96,7 @@ func runHash(cmd *cobra.Command, args []string) error {
 	err = walker.Walk(root, opts, func(fi walker.FileInfo) error {
 		stats.AddTotal(1)
 		file := fi
-		pool.SubmitErr(func() error {
+		return pool.SubmitErr(func() error {
 			sum, hashErr := hashutil.File(file.Path, algo)
 			rec := hashRecord{
 				Path: file.Path,
@@ -119,7 +119,6 @@ func runHash(cmd *cobra.Command, args []string) error {
 			mu.Unlock()
 			return nil
 		}, nil)
-		return nil
 	})
 	pool.Close()
 	if err != nil {

@@ -2,6 +2,7 @@ package worker
 
 import (
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,7 +13,9 @@ func TestPoolRunsJobs(t *testing.T) {
 	p := New(4)
 	p.Start()
 	for i := 0; i < 20; i++ {
-		p.Submit(func() { n.Add(1) })
+		if err := p.Submit(func() { n.Add(1) }); err != nil {
+			t.Fatalf("Submit: %v", err)
+		}
 	}
 	p.Close()
 	if got := n.Load(); got != 20 {
@@ -26,13 +29,15 @@ func TestSubmitErrIsolatesFailures(t *testing.T) {
 	p.Start()
 	for i := 0; i < 10; i++ {
 		i := i
-		p.SubmitErr(func() error {
+		if err := p.SubmitErr(func() error {
 			if i%2 == 0 {
 				return errors.New("boom")
 			}
 			ok.Add(1)
 			return nil
-		}, func(error) { fail.Add(1) })
+		}, func(error) { fail.Add(1) }); err != nil {
+			t.Fatalf("SubmitErr: %v", err)
+		}
 	}
 	p.Close()
 	if ok.Load() != 5 || fail.Load() != 5 {
@@ -46,18 +51,20 @@ func TestPoolBackPressure(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 
-	p.Submit(func() {
+	if err := p.Submit(func() {
 		close(started)
 		<-release
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	<-started
 
 	done := make(chan struct{})
 	go func() {
 		// Fill buffer (workers*2 == 2) then block on the next submit.
-		p.Submit(func() {})
-		p.Submit(func() {})
-		p.Submit(func() {}) // should block until first job releases
+		_ = p.Submit(func() {})
+		_ = p.Submit(func() {})
+		_ = p.Submit(func() {}) // should block until first job releases
 		close(done)
 	}()
 
@@ -74,4 +81,40 @@ func TestPoolBackPressure(t *testing.T) {
 		t.Fatal("timed out waiting for blocked submit")
 	}
 	p.Close()
+}
+
+func TestSubmitAfterCloseReturnsErrClosed(t *testing.T) {
+	p := New(2)
+	p.Start()
+	p.Close()
+
+	if err := p.Submit(func() {}); !errors.Is(err, ErrClosed) {
+		t.Fatalf("want ErrClosed, got %v", err)
+	}
+	if err := p.SubmitErr(func() error { return nil }, nil); !errors.Is(err, ErrClosed) {
+		t.Fatalf("want ErrClosed, got %v", err)
+	}
+
+	// Close must be idempotent.
+	p.Close()
+}
+
+func TestSubmitCloseRaceNoPanic(t *testing.T) {
+	p := New(4)
+	p.Start()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				_ = p.Submit(func() {})
+			}
+		}()
+	}
+
+	time.Sleep(5 * time.Millisecond)
+	p.Close()
+	wg.Wait()
 }
