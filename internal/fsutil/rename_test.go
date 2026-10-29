@@ -24,7 +24,18 @@ func TestRenameNoOverwrite(t *testing.T) {
 	if _, err := os.Stat(dst); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Fatalf("source should be gone, err=%v", err)
+	}
 	if err := RenameNoOverwrite(dst, other); err == nil {
 		t.Fatal("expected overwrite refusal")
+	}
+	// Destination that already existed must be untouched.
+	got, err := os.ReadFile(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "y" {
+		t.Fatalf("destination was overwritten: %q", got)
 	}
 }
