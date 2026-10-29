@@ -57,6 +57,20 @@ func TestPlanSkipUnchanged(t *testing.T) {
 	}
 }
 
+func TestPlanDetectsCollisionWithSkipped(t *testing.T) {
+	dir := t.TempDir()
+	keep := filepath.Join(dir, "keep.txt")
+	other := filepath.Join(dir, "other.txt")
+	// keep.txt stays keep.txt (skipped); other.txt is forced to keep.txt.
+	_, err := Plan([]string{keep, other}, Options{
+		Find: `^(keep|other)\.txt$`,
+		Repl: "keep.txt",
+	})
+	if err == nil {
+		t.Fatal("expected collision with skipped path")
+	}
+}
+
 func TestHasRuleRequired(t *testing.T) {
 	_, err := Plan([]string{"a.txt"}, Options{})
 	if err == nil {

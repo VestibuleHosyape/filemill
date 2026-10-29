@@ -93,7 +93,7 @@ func Plan(paths []string, opts Options) ([]Mapping, error) {
 	}
 
 	out := make([]Mapping, 0, len(paths))
-	seen := make(map[string]string, len(paths)) // newPath -> oldPath
+	seen := make(map[string]string, len(paths)) // cleaned newPath -> oldPath
 
 	for i, oldPath := range paths {
 		dir := filepath.Dir(oldPath)
@@ -103,20 +103,21 @@ func Plan(paths []string, opts Options) ([]Mapping, error) {
 			return nil, fmt.Errorf("%s: %w", oldPath, err)
 		}
 		newPath := filepath.Join(dir, newName)
+		cleanNew := filepath.Clean(newPath)
 		m := Mapping{
 			OldPath: oldPath,
 			NewPath: newPath,
 			OldName: oldName,
 			NewName: newName,
 			Index:   i,
-			Skipped: filepath.Clean(oldPath) == filepath.Clean(newPath),
+			Skipped: filepath.Clean(oldPath) == cleanNew,
 		}
-		if !m.Skipped {
-			if prev, ok := seen[filepath.Clean(newPath)]; ok {
-				return nil, fmt.Errorf("目标冲突: %s 与 %s 都映射到 %s", prev, oldPath, newPath)
-			}
-			seen[filepath.Clean(newPath)] = oldPath
+		// Register skipped paths too: an unchanged file still occupies its path,
+		// so another mapping targeting it must be rejected.
+		if prev, ok := seen[cleanNew]; ok {
+			return nil, fmt.Errorf("目标冲突: %s 与 %s 都映射到 %s", prev, oldPath, newPath)
 		}
+		seen[cleanNew] = oldPath
 		out = append(out, m)
 	}
 	return out, nil
