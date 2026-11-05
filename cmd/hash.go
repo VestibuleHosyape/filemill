@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -87,13 +89,13 @@ func runHash(cmd *cobra.Command, args []string) error {
 
 	var (
 		mu      sync.Mutex
-		records []hashRecord
+		records = []hashRecord{}
 	)
 
 	pool := worker.New(Workers())
 	pool.Start()
 
-	err = walker.Walk(root, opts, func(fi walker.FileInfo) error {
+	scanErr := walker.Walk(root, opts, func(fi walker.FileInfo) error {
 		stats.AddTotal(1)
 		file := fi
 		return pool.SubmitErr(func() error {
@@ -121,10 +123,9 @@ func runHash(cmd *cobra.Command, args []string) error {
 		}, nil)
 	})
 	pool.Close()
-	if err != nil {
-		return err
+	if scanErr != nil {
+		slog.Error("scan failed", "err", scanErr)
 	}
-
 	sort.Slice(records, func(i, j int) bool { return records[i].Path < records[j].Path })
 
 	var buf bytes.Buffer
@@ -140,7 +141,7 @@ func runHash(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	return stats.WriteSummary(cmd.ErrOrStderr())
+	return errors.Join(scanErr, stats.Err(), stats.WriteSummary(cmd.ErrOrStderr()))
 }
 
 func runHashDryRun(cmd *cobra.Command, root string, opts walker.Options, algo string) error {

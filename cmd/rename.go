@@ -1,10 +1,10 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"sort"
 
 	"filemill/internal/fsutil"
@@ -83,9 +83,9 @@ func runRename(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	files, err := walker.Collect(root, walkOpts)
-	if err != nil {
-		return err
+	files, scanErr := walker.Collect(root, walkOpts)
+	if scanErr != nil {
+		slog.Error("scan failed", "err", scanErr)
 	}
 	paths := make([]string, len(files))
 	for i, f := range files {
@@ -106,12 +106,23 @@ func runRename(cmd *cobra.Command, args []string) error {
 		stats.AddTotal(1)
 		if m.Skipped {
 			stats.IncSuccess()
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "skip\t%s\t(unchanged)\n", m.OldPath)
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "skip\t%s\t(unchanged)\n", m.OldPath); err != nil {
+				return err
+			}
 			continue
 		}
 
 		if !execute {
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "dry-run\trename\t%s\t->\t%s\n", m.OldPath, m.NewPath)
+			if _, err := os.Lstat(m.NewPath); err == nil || !os.IsNotExist(err) {
+				stats.IncFailed()
+				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "error\t%s\t->\t%s\ttarget exists or is inaccessible\n", m.OldPath, m.NewPath); err != nil {
+					return err
+				}
+				continue
+			}
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "dry-run\trename\t%s\t->\t%s\n", m.OldPath, m.NewPath); err != nil {
+				return err
+			}
 			stats.IncSuccess()
 			continue
 		}
@@ -119,19 +130,23 @@ func runRename(cmd *cobra.Command, args []string) error {
 		if err := applyOneRename(m); err != nil {
 			stats.IncFailed()
 			slog.Error("rename failed", "from", m.OldPath, "to", m.NewPath, "err", err)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "error\t%s\t->\t%s\t%s\n", m.OldPath, m.NewPath, err.Error())
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "error\t%s\t->\t%s\t%s\n", m.OldPath, m.NewPath, err.Error()); err != nil {
+				return err
+			}
 			continue
 		}
 		stats.IncSuccess()
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "renamed\t%s\t->\t%s\n", m.OldPath, m.NewPath)
+		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "renamed\t%s\t->\t%s\n", m.OldPath, m.NewPath); err != nil {
+			return err
+		}
 	}
 
 	mode := "dry-run"
 	if execute {
 		mode = "apply"
 	}
-	_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "mode=%s %s\n", mode, stats.Summary())
-	return nil
+	_, outputErr := fmt.Fprintf(cmd.ErrOrStderr(), "mode=%s %s\n", mode, stats.Summary())
+	return errors.Join(scanErr, stats.Err(), outputErr)
 }
 
 func applyOneRename(m renameutil.Mapping) error {

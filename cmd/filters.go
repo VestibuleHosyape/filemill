@@ -11,6 +11,7 @@ import (
 
 // filterFlags holds shared walk/filter options used by multiple subcommands.
 type filterFlags struct {
+	exclude  []string
 	exts     []string
 	nameGlob string
 	regex    string
@@ -21,6 +22,7 @@ type filterFlags struct {
 }
 
 func (f *filterFlags) register(cmd *cobra.Command) {
+	cmd.Flags().StringArrayVar(&f.exclude, "exclude", nil, "排除文件或目录 glob，可重复；相对路径使用 /，不支持 **")
 	cmd.Flags().StringSliceVar(&f.exts, "ext", nil, "按扩展名过滤，可重复或逗号分隔，如 --ext .txt,.log")
 	cmd.Flags().StringVar(&f.nameGlob, "name", "", "按文件名 glob 过滤，如 --name '*.log'")
 	cmd.Flags().StringVar(&f.regex, "regex", "", "按文件名正则过滤")
@@ -40,6 +42,7 @@ func (f *filterFlags) options() (walker.Options, error) {
 		return walker.Options{}, fmt.Errorf("解析 --before: %w", err)
 	}
 	return walker.Options{
+		Exclude:   f.exclude,
 		Exts:      f.exts,
 		NameGlob:  f.nameGlob,
 		NameRegex: f.regex,

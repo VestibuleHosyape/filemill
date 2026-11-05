@@ -18,28 +18,35 @@ var (
 	logCloser io.Closer
 )
 
+// Version is populated by the release build.
+var Version = "dev"
+
 // rootCmd is the base command for filemill.
 var rootCmd = &cobra.Command{
-	Use:   "filemill",
-	Short: "单二进制、可组合的文件批量处理工具",
+	Version: Version,
+	Use:     "filemill",
+	Short:   "单二进制、可组合的文件批量处理工具",
 	Long: `filemill 是一个跨平台的文件批量处理 CLI。
 
 支持递归遍历、过滤规则、并发处理，以及 hash / rename / dedupe 等子命令。
 破坏性操作默认 dry-run，需显式 --apply 或 --yes 才会真正执行。`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		return setupLogger(flagLogFile)
-	},
-	PersistentPostRun: func(cmd *cobra.Command, args []string) {
-		if logCloser != nil {
-			_ = logCloser.Close()
+		if flagWorkers < 1 || flagWorkers > 1024 {
+			return fmt.Errorf("--workers must be between 1 and 1024")
 		}
+		return setupLogger(flagLogFile)
 	},
 	SilenceUsage: true,
 }
 
 // Execute runs the root command.
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
+	err := rootCmd.Execute()
+	if logCloser != nil {
+		_ = logCloser.Close()
+		logCloser = nil
+	}
+	if err != nil {
 		os.Exit(1)
 	}
 }
