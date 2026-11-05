@@ -1,0 +1,46 @@
+name: CI
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test -cover ./...
+      - run: go build -o dist/ ./...
+      - name: Race detector
+        if: runner.os != 'Windows'
+        run: go test -race ./...
+  release-build:
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Package six targets
+        env:
+          RELEASE_REF: ${{ github.ref_name }}
+        run: |
+          version=v0.1.0-dev
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then version="$RELEASE_REF"; fi
+          go run ./tools/release -version "$version"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: filemill-release
+          path: dist/*
+          if-no-files-found: error
