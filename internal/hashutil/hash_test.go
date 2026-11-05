@@ -33,3 +33,25 @@ func TestNewRejectsUnknown(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestNormalizeAndFileErrors(t *testing.T) {
+	for input, want := range map[string]string{" MD5 ": MD5, "SHA-1": SHA1, " SHA-256 ": SHA256} {
+		got, err := Normalize(input)
+		if err != nil || got != want {
+			t.Fatalf("Normalize(%q)=%q %v", input, got, err)
+		}
+	}
+	if _, err := Normalize("unknown"); err == nil {
+		t.Fatal("accepted unknown algorithm")
+	}
+	missing := filepath.Join(t.TempDir(), "missing")
+	if _, err := File(missing, SHA256); err == nil {
+		t.Fatal("accepted missing file")
+	}
+	if _, err := File(missing, "unknown"); err == nil {
+		t.Fatal("accepted unknown algorithm")
+	}
+	if _, err := File(t.TempDir(), SHA256); err == nil {
+		t.Fatal("accepted directory")
+	}
+}
