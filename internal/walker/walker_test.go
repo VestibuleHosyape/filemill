@@ -1,6 +1,7 @@
 package walker
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -27,6 +28,82 @@ func TestCollectExtAndGlob(t *testing.T) {
 	}
 	if len(files) != 1 || filepath.Base(files[0].Path) != "b.log" {
 		t.Fatalf("glob=*.log want b.log, got %+v", names(files))
+	}
+}
+
+func TestExcludePrunesDirectories(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"a.txt", ".git/config", "node_modules/pkg/a.js", "sub/skip.log", "sub/keep.txt"} {
+		mustWrite(t, filepath.Join(dir, filepath.FromSlash(name)), "x")
+	}
+	files, err := Collect(dir, Options{Exclude: []string{".git", "node_modules", "sub/*.log"}})
+	if err != nil || len(files) != 2 {
+		t.Fatalf("exclusion failed: %v %v", names(files), err)
+	}
+}
+
+func TestRelativeExcludeHasConsistentSlashSemantics(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "sub", "skip.log"), "x")
+	mustWrite(t, filepath.Join(dir, "sub", "deep", "keep.log"), "x")
+	files, err := Collect(dir, Options{Exclude: []string{"sub/*.log"}})
+	if err != nil || len(files) != 1 || filepath.Base(files[0].Path) != "keep.log" {
+		t.Fatalf("glob crossed directory separator: %v %v", files, err)
+	}
+}
+
+func TestInvalidFiltersFailEvenOnEmptyDirectory(t *testing.T) {
+	for _, opts := range []Options{{NameGlob: "["}, {Exclude: []string{"["}}, {MinSize: -1}, {MinSize: 10, MaxSize: 1}} {
+		if _, err := Collect(t.TempDir(), opts); err == nil {
+			t.Fatalf("accepted %+v", opts)
+		}
+	}
+}
+
+func TestCallbackErrorAborts(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "a"), "a")
+	mustWrite(t, filepath.Join(dir, "b"), "b")
+	want := errors.New("stop")
+	calls := 0
+	err := Walk(dir, Options{}, func(FileInfo) error { calls++; return want })
+	if !errors.Is(err, want) || calls != 1 {
+		t.Fatalf("callback error not propagated: %v %d", err, calls)
+	}
+}
+
+func TestSymlinkRootSkipped(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "file")
+	mustWrite(t, target, "x")
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skip(err)
+	}
+	files, err := Collect(link, Options{})
+	if err != nil || len(files) != 0 {
+		t.Fatalf("followed root symlink: %v %v", files, err)
+	}
+}
+
+func TestScanErrorContinuesAccessibleSiblings(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "a.txt"), "a")
+	mustWrite(t, filepath.Join(dir, "z.txt"), "z")
+	vanishing := filepath.Join(dir, "middle")
+	if err := os.Mkdir(vanishing, 0700); err != nil {
+		t.Fatal(err)
+	}
+	var seen []string
+	err := Walk(dir, Options{}, func(f FileInfo) error {
+		seen = append(seen, filepath.Base(f.Path))
+		if filepath.Base(f.Path) == "a.txt" {
+			return os.Remove(vanishing)
+		}
+		return nil
+	})
+	if err == nil || len(seen) != 2 || seen[1] != "z.txt" {
+		t.Fatalf("scan did not isolate error: %v %v", seen, err)
 	}
 }
 
