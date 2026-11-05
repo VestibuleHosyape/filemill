@@ -12,16 +12,16 @@ filemill 的目标是提供一个可在 Windows / macOS / Linux 上直接使用�
 
 ## 当前状态
 
-项目处于早期开发阶段。**里程碑 M1～M3** 已完成：walker + 过滤、并发 `hash`、以及安全的 `rename`。
+项目处于早期开发阶段。已实现 `list`、并发 `hash`、安全默认的 `rename`，以及 `dedupe` 查重与显式确认删除。发布前仍需确认远程跨平台 CI 结果。
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
 | M1 | CLI 骨架 + 全局 flag + walker + `list` | 已完成 |
 | M2 | 并发池 + 原子写入 + `hash` | 已完成 |
 | M3 | `rename` + dry-run / apply + 报告 | 已完成 |
-| M4 | `dedupe` + `clean` | 计划中 |
-| M5 | 配置文件、排除规则、输出格式 | 计划中 |
-| M6 | 单测、文档、跨平台发布（v0.1.0） | 计划中 |
+| M4 | `dedupe`；`clean` 延后至 P1 | `dedupe` 已实现 |
+| M5 | 配置文件、排除规则、输出格式 | 排除规则已实现；配置和统一输出待做 |
+| M6 | 单测、文档、跨平台发布（v0.1.0） | 测试、CI 和打包脚本已添加；待远程验证及发布 |
 
 ## 功能
 
@@ -36,16 +36,14 @@ filemill 的目标是提供一个可在 Windows / macOS / Linux 上直接使用�
 - `list` — 打印匹配文件（路径、大小、修改时间）
 - `hash` — 批量 MD5 / SHA-1 / SHA-256（`table` / `csv` / `json`）
 - `rename` — 前缀、后缀、序号、正则替换（默认 dry-run）
-
-### 计划中（剩余 MVP / P0）
-
-- `dedupe` — 按大小 + 哈希查重（可选 `--delete`）
-- 按规则 `clean`（强制 dry-run 确认）
+- `dedupe` — 大小 + SHA-256 查重，稳定保留规则，支持 table / csv / json 和删除前复核
+- `--exclude` — 排除文件与目录，匹配目录时直接跳过子树
 
 ### 后续（P1 / P2）
 
+- 按规则 `clean`（默认 dry-run）
 - `compress` / `extract`
-- `.filemill.yaml` 配置、`--exclude`、统一 `--output`
+- `.filemill.yaml` 配置、统一 `--output`
 - 断点续跑、编码转换、目录监听、插件、TUI
 
 ## 环境要求
@@ -65,6 +63,8 @@ Windows：
 ```powershell
 go build -o filemill.exe .
 ```
+
+发布打包及性能验证见 [RELEASING.md](RELEASING.md)。本地开发建议构建至 `dist/`，避免覆盖仓库中已有的旧二进制。
 
 ## 快速开始
 
@@ -94,7 +94,7 @@ filemill rename ./testdata --suffix _bak --seq --seq-start 1 --seq-width 3
 | `--dry-run` | 试运行：只预览，不改动文件 |
 | `--log-file path` | 同时将结构化日志写入文件 |
 
-### 共用过滤 flag（`list` / `hash` / `rename`）
+### 共用过滤 flag（`list` / `hash` / `rename` / `dedupe`）
 
 | Flag | 说明 |
 |---|---|
@@ -103,6 +103,7 @@ filemill rename ./testdata --suffix _bak --seq --seq-start 1 --seq-width 3
 | `--regex` | 文件名正则（筛选要处理的文件） |
 | `--min-size` / `--max-size` | 大小上下限（字节） |
 | `--after` / `--before` | 修改时间过滤（`2006-01-02` 或 RFC3339） |
+| `--exclude` | 可重复的 glob：按文件/目录名，或使用 `/` 的根目录相对路径匹配；不支持 `**`，没有隐式默认排除 |
 
 ### `hash` flag
 
@@ -125,21 +126,39 @@ filemill rename ./testdata --suffix _bak --seq --seq-start 1 --seq-width 3
 
 规则叠加顺序：正则 → 前缀 → 后缀 → 序号。全局 `--dry-run` 会覆盖 `--apply` / `--yes`。
 
+### 查重与删除
+
+```bash
+filemill dedupe ./data --exclude .git --exclude node_modules --output json
+filemill dedupe ./data --delete                 # 仅预览删除计划
+filemill dedupe ./data --delete --apply         # 确认执行
+filemill dedupe ./data --delete --yes --dry-run # 仍然只预览
+```
+
+只对大小相同的候选文件计算 SHA-256。每组按路径字符串升序保留第一份，跳过保留文件的硬链接别名；空文件也参与查重。扫描不会跟随符号链接，包括直接传入的符号链接路径。`reclaimable_bytes` 是重复项的逻辑字节总数，不保证实际释放的磁盘空间（硬链接、稀疏文件和文件系统压缩会影响它）。
+
+`--apply` / `--yes` 必须与 `--delete` 一起使用。扫描或哈希发生任何错误时，本次删除整体禁止；删除阶段单项失败会继续处理其他项，最终返回非零退出码。删除前重新检查保留项与重复项的文件身份、大小、修改时间、SHA-256，并逐字节比较。**请先停止目标目录的并发写入**：跨平台的路径删除无法彻底消除最后检查与删除之间的文件替换竞态。删除无撤销功能。
+
+JSON 包含 `groups`、`errors`、`scanned`、`hashed`、`reclaimable_bytes`、`mode`、`actions`；CSV 每行表示一个重复项及其保留路径、大小、哈希、状态和错误。进度汇总输出到 stderr。
+
 ## 安全约定
 
-破坏性操作（`rename`，以及后续的删除 / `clean`）**默认 dry-run**。真正改动需要 `--apply` 或 `--yes`。重命名不会覆盖已存在目标；冲突会明确报错，其余文件继续处理。
+破坏性操作（`rename`、`dedupe --delete`，以及后续的 `clean`）**默认 dry-run**。真正改动需要 `--apply` 或 `--yes`。重命名不会覆盖已存在目标；冲突会明确报错，其余文件继续处理。
+
+可访问的文件会在其他文件扫描失败后继续处理；扫描或处理有失败时返回非零退出码。写入结果先完成临时文件再替换目标，替换失败不会先删除旧目标；非 Unix 平台的原子可见性取决于操作系统和文件系统。
 
 ## 项目结构
 
 ```text
 filemill/
 ├── main.go
-├── cmd/                   # Cobra 命令：list、hash、rename
+├── cmd/                   # Cobra 命令：list、hash、rename、dedupe
 ├── internal/
 │   ├── walker/            # 递归遍历 + 过滤
 │   ├── worker/            # 并发池
 │   ├── fsutil/            # 原子写入、安全重命名
 │   ├── hashutil/          # 文件哈希
+│   ├── dedupe/            # 查重计划与删除前复核
 │   ├── renameutil/        # 重命名规则与计划
 │   └── report/            # 进度汇总
 ├── testdata/

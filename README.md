@@ -12,16 +12,16 @@ filemill aims to be one binary you can drop onto Windows, macOS, or Linux and dr
 
 ## Status
 
-Early development. **Milestones M1–M3** are done: walker + filters, concurrent `hash`, and safe `rename`.
+Early development. `list`, concurrent `hash`, safe-default `rename`, and `dedupe` with verified, explicitly confirmed deletion are implemented. Remote cross-platform CI still needs to pass before release.
 
 | Milestone | Scope | Status |
 |---|---|---|
 | M1 | CLI skeleton + global flags + walker + `list` | Done |
 | M2 | Worker pool + atomic writes + `hash` | Done |
 | M3 | `rename` + dry-run / apply + reporting | Done |
-| M4 | `dedupe` + `clean` | Planned |
-| M5 | Config file, excludes, output formats | Planned |
-| M6 | Tests, docs, cross-platform release (v0.1.0) | Planned |
+| M4 | `dedupe`; defer `clean` to P1 | `dedupe` implemented |
+| M5 | Config file, excludes, output formats | Excludes implemented; config and unified output pending |
+| M6 | Tests, docs, cross-platform release (v0.1.0) | Tests, CI and packaging added; remote validation and publication pending |
 
 ## Features
 
@@ -36,16 +36,14 @@ Early development. **Milestones M1–M3** are done: walker + filters, concurrent
 - `list` — print matching files (path, size, mtime)
 - `hash` — batch MD5 / SHA-1 / SHA-256 (`table` / `csv` / `json`)
 - `rename` — prefix, suffix, sequence, regex replace (default dry-run)
-
-### Planned (MVP / P0 remaining)
-
-- `dedupe` — size + hash duplicate detection (`--delete` optional)
-- Rule-based `clean` (force dry-run confirmation)
+- `dedupe` — size + SHA-256 detection, deterministic keeper selection, table / csv / json, verified deletion
+- `--exclude` — file/directory patterns, pruning matching directory subtrees
 
 ### Later (P1 / P2)
 
+- Rule-based `clean` (default dry-run)
 - `compress` / `extract`
-- `.filemill.yaml` config, `--exclude`, unified `--output`
+- `.filemill.yaml` config, unified `--output`
 - Resume / checkpoint, encoding convert, watch mode, plugins, TUI
 
 ## Requirements
@@ -67,6 +65,8 @@ go build -o filemill.exe .
 ```
 
 ## Quick start
+
+See [RELEASING.md](RELEASING.md) for packaging and performance checks. Build development binaries into `dist/` to avoid overwriting the old binary already in the repository.
 
 ```bash
 # List files
@@ -94,7 +94,7 @@ filemill rename ./testdata --suffix _bak --seq --seq-start 1 --seq-width 3
 | `--dry-run` | Preview actions without changing files |
 | `--log-file path` | Also write structured logs to a file |
 
-### Shared filter flags (`list` / `hash` / `rename`)
+### Shared filter flags (`list` / `hash` / `rename` / `dedupe`)
 
 | Flag | Description |
 |---|---|
@@ -103,6 +103,7 @@ filemill rename ./testdata --suffix _bak --seq --seq-start 1 --seq-width 3
 | `--regex` | Filename regular expression (which files to include) |
 | `--min-size` / `--max-size` | Size bounds in bytes |
 | `--after` / `--before` | mtime filters (`2006-01-02` or RFC3339) |
+| `--exclude` | Repeatable glob against basenames or root-relative paths using `/`; matching directories are pruned, no `**`, no implicit excludes |
 
 ### `hash` flags
 
@@ -125,21 +126,39 @@ filemill rename ./testdata --suffix _bak --seq --seq-start 1 --seq-width 3
 
 Rename rules stack in order: regex → prefix → suffix → sequence. Global `--dry-run` overrides `--apply` / `--yes`.
 
+### Duplicate detection and deletion
+
+```bash
+filemill dedupe ./data --exclude .git --exclude node_modules --output json
+filemill dedupe ./data --delete                 # Preview only
+filemill dedupe ./data --delete --apply         # Execute
+filemill dedupe ./data --delete --yes --dry-run # Still preview only
+```
+
+Only equal-size candidates are hashed using SHA-256. Each group keeps its first path in lexical string order. Hardlink aliases of that keeper are skipped; empty files participate. Symlinks are not followed, including a root path that is itself a symlink. `reclaimable_bytes` counts logical duplicate bytes, not guaranteed physical disk savings (hardlinks, sparse files and compression affect actual allocation).
+
+`--apply` / `--yes` require `--delete`. Any scan/hash error blocks all deletion in that run. During deletion, a failed item does not prevent other items from being processed; the final exit status is nonzero. Before deletion, both files are rechecked for identity, size, mtime, SHA-256 and byte equality. **Stop concurrent writes in the target tree first**: portable pathname deletion cannot eliminate replacement races between the final check and removal. Deletion has no undo.
+
+JSON includes `groups`, `errors`, `scanned`, `hashed`, `reclaimable_bytes`, `mode` and `actions`. CSV has one row per duplicate with keeper path, size, hash, status and error. Summaries go to stderr.
+
 ## Safety
 
-Destructive operations (`rename`, and upcoming delete / `clean`) **default to dry-run**. Real changes require `--apply` or `--yes`. Existing rename targets are not overwritten; conflicts are reported and other files continue.
+Destructive operations (`rename`, `dedupe --delete`, and future `clean`) **default to dry-run**. Real changes require `--apply` or `--yes`. Existing rename targets are not overwritten; conflicts are reported and other files continue.
+
+Scanning continues over accessible files after filesystem errors and returns a nonzero status if scanning or processing failed. Output replacement never deletes the existing destination before attempting the rename. Atomic visibility on non-Unix systems depends on the OS/filesystem.
 
 ## Project layout
 
 ```text
 filemill/
 ├── main.go
-├── cmd/                   # Cobra commands: list, hash, rename
+├── cmd/                   # Cobra commands: list, hash, rename, dedupe
 ├── internal/
 │   ├── walker/            # Recursive walk + filters
 │   ├── worker/            # Bounded worker pool
 │   ├── fsutil/            # Atomic write, safe rename
 │   ├── hashutil/          # File hashing
+│   ├── dedupe/            # Duplicate planning and verified deletion
 │   ├── renameutil/        # Rename planning / rules
 │   └── report/            # Progress summary
 ├── testdata/

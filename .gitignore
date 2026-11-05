@@ -1,0 +1,8 @@
+/dist/
+/filemill
+/filemill.exe
+*.test
+*.test.exe
+coverage*.out
+.idea/
+.gai/
