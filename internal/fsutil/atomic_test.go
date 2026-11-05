@@ -54,3 +54,33 @@ func TestWriteFileAtomicCreatesParentDirs(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestFailedReplacementPreservesDestination(t *testing.T) {
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "keep")
+	if err := os.WriteFile(dst, []byte("original"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := replaceFile(filepath.Join(dir, "missing"), dst); err == nil {
+		t.Fatal("expected rename failure")
+	}
+	data, err := os.ReadFile(dst)
+	if err != nil || string(data) != "original" {
+		t.Fatalf("destination lost: %q %v", data, err)
+	}
+}
+
+func TestFailedWriteCleansTemporaryFile(t *testing.T) {
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "directory")
+	if err := os.Mkdir(dst, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFileAtomic(dst, []byte("data"), 0600); err == nil {
+		t.Fatal("expected failure replacing directory")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 || !entries[0].IsDir() {
+		t.Fatalf("unexpected leftovers: %v %v", entries, err)
+	}
+}

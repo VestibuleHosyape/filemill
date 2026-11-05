@@ -39,3 +39,14 @@ func TestRenameNoOverwrite(t *testing.T) {
 		t.Fatalf("destination was overwritten: %q", got)
 	}
 }
+
+func TestRenameNoOpAndMissingSource(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "source")
+	if err := RenameNoOverwrite(src, src); err != nil {
+		t.Fatal("same path must be no-op", err)
+	}
+	if err := RenameNoOverwrite(src, filepath.Join(dir, "target")); err == nil {
+		t.Fatal("accepted missing source")
+	}
+}

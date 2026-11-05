@@ -50,16 +50,8 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 
 // replaceFile renames oldpath to newpath, replacing an existing newpath on Windows.
 func replaceFile(oldpath, newpath string) error {
-	err := os.Rename(oldpath, newpath)
-	if err == nil {
-		return nil
-	}
-	if runtime.GOOS != "windows" {
-		return err
-	}
-	// Windows rename fails when the destination already exists.
-	if rmErr := os.Remove(newpath); rmErr != nil && !os.IsNotExist(rmErr) {
-		return err
-	}
+	// Never remove the destination on failure: the old data must survive a
+	// failed replacement. os.Rename uses the platform replacement operation.
+	// Atomic visibility on non-Unix systems depends on the filesystem.
 	return os.Rename(oldpath, newpath)
 }
