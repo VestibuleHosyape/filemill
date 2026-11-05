@@ -53,3 +53,11 @@ func (s *Stats) WriteSummary(w io.Writer) error {
 	_, err := fmt.Fprintln(w, s.Summary())
 	return err
 }
+
+// Err signals a partial failure after the remaining files have been processed.
+func (s *Stats) Err() error {
+	if n := s.Failed.Load(); n > 0 {
+		return fmt.Errorf("%d file(s) failed", n)
+	}
+	return nil
+}
